@@ -15,8 +15,6 @@ from __future__ import annotations
 import collections
 import hashlib
 import json
-import logging
-import logging.handlers
 import os
 import platform
 import re
@@ -25,7 +23,6 @@ import sys
 import threading
 import time
 import traceback
-import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
@@ -97,6 +94,82 @@ class _Guard:
         return et is not None and issubclass(et, Exception)
 
 
+# =================================================================== 滚动文件
+
+class _RotatingFile:
+    """按大小滚动的追加写文件。不用 logging 模块，也就不会多出一个 Logger 实例。
+
+    句柄常开、每行写完 flush（崩溃前最后几行也在盘上）；写满 max_bytes 就把 .1 → .2 → … → .N
+    依次改名，最老的那份丢掉。
+    Windows 下文件可能被编辑器 / 杀毒软件占着，改名会失败：这一回就不滚，继续往当前文件里追加，
+    原因记在 rotate_error；只有文件长到 max_bytes 的 HARD_FACTOR 倍还滚不动，才把它清空重写，
+    免得无限长大。
+    """
+
+    HARD_FACTOR = 4
+
+    def __init__(self, path: str, max_bytes: int, backups: int):
+        self.path = str(path)
+        self.max_bytes = max(1, int(max_bytes))
+        self.backups = max(0, int(backups))
+        self.rotate_error: str | None = None
+        self._lock = threading.Lock()
+        self._fh = None
+        self._size = 0
+        Path(self.path).parent.mkdir(parents=True, exist_ok=True)
+
+    def write_line(self, line: str) -> None:
+        data = (line + "\n").encode("utf-8", "replace")
+        with self._lock:
+            if self._fh is None:
+                self._open("ab")
+            if self._size > 0 and self._size + len(data) > self.max_bytes:
+                self._rotate()
+            self._fh.write(data)
+            self._fh.flush()
+            self._size += len(data)
+
+    def close(self) -> None:
+        with self._lock:
+            self._close_fh()
+
+    # ---- 以下都在 _lock 里调用
+    def _open(self, mode: str) -> None:
+        self._fh = open(self.path, mode)
+        self._size = os.path.getsize(self.path)
+
+    def _close_fh(self) -> None:
+        fh, self._fh = self._fh, None
+        if fh is not None:
+            try:
+                fh.close()
+            except OSError:
+                pass
+
+    def _rotate(self) -> None:
+        self._close_fh()
+        try:
+            if self.backups > 0:
+                for i in range(self.backups - 1, 0, -1):
+                    src = f"{self.path}.{i}"
+                    if os.path.exists(src):
+                        os.replace(src, f"{self.path}.{i + 1}")
+                os.replace(self.path, f"{self.path}.1")
+            else:
+                self._open("wb")      # 不留旧文件：直接清空
+                return
+            self.rotate_error = None
+            self._open("ab")
+        except OSError as exc:
+            self.rotate_error = f"{type(exc).__name__}: {exc}"
+            self._close_fh()
+            try:
+                too_big = os.path.getsize(self.path) > self.max_bytes * self.HARD_FACTOR
+            except OSError:
+                too_big = False
+            self._open("wb" if too_big else "ab")
+
+
 # =================================================================== DiagLog
 
 class DiagLog:
@@ -119,37 +192,22 @@ class DiagLog:
         self.notes: dict[str, Any] = {}
         self._lock = threading.Lock()
         self._slow_logged: dict[str, float] = {}
-        self._flog: logging.Logger | None = None
-        self._handler: logging.Handler | None = None
+        self._file: _RotatingFile | None = None
         if enabled and file_path:
             self._open_file(max_bytes, backups)
 
     # ------------------------------------------------------------ 文件
     def _open_file(self, max_bytes: int, backups: int) -> None:
         try:
-            Path(self.file_path).parent.mkdir(parents=True, exist_ok=True)
-            lg = logging.getLogger("sf_diag." + uuid.uuid4().hex)
-            lg.setLevel(logging.DEBUG)
-            lg.propagate = False
-            h = logging.handlers.RotatingFileHandler(
-                self.file_path, maxBytes=max_bytes, backupCount=backups, encoding="utf-8", delay=True)
-            h.setFormatter(logging.Formatter("%(message)s"))
-            lg.addHandler(h)
-            self._flog, self._handler = lg, h
+            self._file = _RotatingFile(self.file_path, max_bytes, backups)
         except Exception as exc:
             self.file_error = f"{type(exc).__name__}: {exc}"
-            self._flog = self._handler = None
+            self._file = None
 
     def close(self) -> None:
-        h, self._handler = self._handler, None
-        if h is not None:
-            try:
-                if self._flog is not None:
-                    self._flog.removeHandler(h)
-                h.close()
-            except Exception:
-                pass
-        self._flog = None
+        f, self._file = self._file, None
+        if f is not None:
+            f.close()
 
     # ------------------------------------------------------------ 记录
     def _emit(self, level: str, msg: str, exc_text: str | None = None, *, to_host: bool = True) -> None:
@@ -165,12 +223,13 @@ class DiagLog:
                     self.error_count += 1
                     self.errors.append({"at": _iso(ts), "message": _clip(body, 500),
                                         "traceback": _clip(exc_text or "", 4000)})
-            fl = self._flog
-            if fl is not None:
+            f = self._file
+            if f is not None:
                 try:
-                    fl.info(line)
-                except Exception:
-                    pass
+                    f.write_line(line)
+                    self.file_error = None
+                except Exception as exc:     # 写盘失败不能影响业务，记下原因给诊断包看
+                    self.file_error = f"{type(exc).__name__}: {exc}"
         if to_host and self.host is not None:
             try:
                 fn = getattr(self.host, "error" if level == "exception" else level, None) or self.host.info
@@ -363,6 +422,7 @@ def build_bundle(store: Any, recorder: Any, diag: DiagLog, *, config: dict | Non
         },
         "config": cfg_out,
         "log_file": {"path": _redact_home(diag.file_path or ""), "error": diag.file_error,
+                     "rotate_error": getattr(diag._file, "rotate_error", None),
                      "enabled": diag.enabled},
     }
     try:

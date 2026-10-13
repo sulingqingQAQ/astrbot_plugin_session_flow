@@ -1,6 +1,6 @@
 # 会话流 开发文档
 
-> 对应版本 **v1.0.0**（许可证 AGPL-3.0，见仓库根目录的 `LICENSE`）。这份文档面向想读代码、改代码、接手维护的人；怎么用、有哪些功能见 [`README.md`](../README.md)。
+> 对应版本 **v1.0.1**（许可证 AGPL-3.0，见仓库根目录的 `LICENSE`）。这份文档面向想读代码、改代码、接手维护的人；怎么用、有哪些功能见 [`README.md`](../README.md)。
 > 文档里说的“钩子”都是 AstrBot 的插件事件钩子（`@filter.on_llm_request` 这一类）。
 
 ## 目录
@@ -372,6 +372,8 @@ handler.handler = functools.partial(raw, 插件实例)
 ### 8.10 `diag.py` — 诊断日志与诊断包
 
 - `DiagLog`：包装宿主 logger（照样转给宿主），同时记进**内存环（2000 行）+ 滚动日志文件（1 MB × 4）**；统计每个钩子的次数 / 平均 / 最慢 / 报错 / 最近报错时间；保留最近 300 次钩子轨迹和最近 50 条报错；钩子耗时超过 200 ms 记警告。
+- **日志规范**：AstrBot 插件市场要求 logger 只能从 `astrbot.api` 导入，不许用内置 `logging`。所以 `main.py` 把 `astrbot.api.logger` 传给 `DiagLog` 当宿主；`webapi.py` 的报错走 `self.diag`（`_log_exc` / `_log_warn`），不自己建 logger；滚动日志文件是 `_RotatingFile`（手写，**不建 `logging.Logger`**）。`tests/test_rules_static.py` 用 `ast` 扫 `main.py` 和 `sf/*.py`，出现 `import logging` / `getLogger` / `RotatingFileHandler` 就失败。
+- `_RotatingFile`：句柄常开、每行写完 `flush`；写满 `max_bytes` 把 `.1 → .2 → …` 依次改名，最老的丢。Windows 下文件被占着、改名失败时，这一回不滚、继续追加，原因记在 `rotate_error`（诊断包 `log_file.rotate_error`）；长到 4 倍上限仍滚不动才清空重写。写盘失败只记进 `file_error`，不影响业务、内存环和宿主日志。
 - `guard(name, umo)`：钩子外面的上下文管理器，**吞掉异常**、记次数和耗时、记 traceback。
 - `build_bundle`：环境、配置（名字带 key / token / secret / password 的值隐藏）、库状态、运行时状态（后台任务、写队列、注入归属状态）、钩子统计、最近报错、最近 40 轮摘要、日志尾巴。**不含聊天正文**，会话 ID 默认打码（`mask_umo`）。
 
@@ -459,7 +461,7 @@ handler.handler = functools.partial(raw, 插件实例)
 python -I tests/run_all.py
 ```
 
-当前 **281 个用例**，在 Python 3.12 下跑过。`run_all.py` 把临时目录指到 `tests/.tmp`（有的环境系统临时目录里 SQLite 写不进）——**这个目录会越攒越大，不用时可以整个删掉，别提交**（`.gitignore` 已排除）。
+当前 **293 个用例**，在 Python 3.12 下跑过。`run_all.py` 把临时目录指到 `tests/.tmp`（有的环境系统临时目录里 SQLite 写不进）——**这个目录会越攒越大，不用时可以整个删掉，别提交**（`.gitignore` 已排除）。
 
 | 文件 | 管什么 |
 |---|---|
@@ -472,9 +474,10 @@ python -I tests/run_all.py
 | `test_search.py` / `test_pager.py` | 检索语法、分页、搜本对话、4 万条大批量回归 |
 | `test_export.py` / `test_v018.py` | 单轮 / 批量导出、屏蔽、体积构成、时间拆分、横幅、注入统计 |
 | `test_spdiff.py` | system prompt 对比（行内 / 逐行 / 来源 / 接口各状态） |
-| `test_summary.py` / `test_webapi.py` / `test_diag.py` | 摘要、接口、诊断 |
+| `test_summary.py` / `test_webapi.py` / `test_diag.py` | 摘要、接口、诊断（含滚动文件的轮转 / 改名失败兜底、接口报错进诊断日志） |
 | `test_main_wiring.py` | `main.py` 的钩子接线、异常被吞 |
 | `test_page_static.py` | 页面静态检查（见第 10 节） |
+| `test_rules_static.py` | 日志规范：`main.py` / `sf/` 里不许用内置 `logging` |
 
 **测试辅助**：`tests/fakes.py` 有 `FakeEvent / FakeReq / FakeCtx / FakeResp / FakeResult` 和 `drive_run(rec, …)`（按真实时间线驱动一整轮钩子）、`make_recorder()`、`tmp_db_path()`。
 几个值得照抄的写法：用 `unittest` + 离线 `Store`；接口用 `asyncio.new_event_loop().run_until_complete(api.handle_xxx(args, body))` 直接调；对算法类模块写“**还原不变量**”（如 `spdiff` 用逐行结果还原出新 / 旧文本必须和原文一致）。
@@ -571,3 +574,4 @@ python -I tests/run_all.py
 | v0.1.8 | 上下文体积构成 + 缓存命中率、每轮时间拆分、顶部横幅、按插件统计注入量、导出整页 / 搜索结果、导出时可选屏蔽 |
 | v0.1.9 | system prompt 对比上一轮：详情右上角小块 + 改动处红框的完整提示词视图 + 每处改动标是谁改的 |
 | **v1.0.0** | 正式版。代码和 v0.1.9 相同；补上开发文档（`docs/DEVELOPMENT.md`）、`LICENSE`（AGPL-3.0）、`.gitignore`，清掉文档和注释里的本机路径 |
+| **v1.0.1** | 按插件市场的日志规范整改：不再使用内置 `logging`（`webapi.py` 的报错改走诊断日志，`diag.py` 的滚动日志文件改为手写的 `_RotatingFile`）；接口报错现在也会进诊断包的“最近报错”；诊断包 `log_file` 多一项 `rotate_error`；新增静态测试锁住日志规范。功能和页面没有变化 |

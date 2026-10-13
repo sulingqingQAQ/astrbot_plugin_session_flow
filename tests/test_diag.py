@@ -106,6 +106,95 @@ class TestDiagLog(unittest.TestCase):
         d.close()
         (tmp / "logs" / "session_flow.log").unlink()  # Windows 下句柄没放会抛
 
+    def test_write_after_close_is_dropped_quietly(self):
+        d, host, tmp = new_diag()
+        d.info("关之前")
+        d.close()
+        d.info("关之后")                                   # 不抛，也不会把文件又打开
+        text = (tmp / "logs" / "session_flow.log").read_text(encoding="utf-8")
+        self.assertIn("关之前", text)
+        self.assertNotIn("关之后", text)
+        (tmp / "logs" / "session_flow.log").unlink()
+
+    def test_file_lines_are_on_disk_before_close(self):
+        d, _, tmp = new_diag()
+        d.info("崩溃前最后一行")
+        text = (tmp / "logs" / "session_flow.log").read_text(encoding="utf-8")  # 没 close 也读得到
+        self.assertIn("崩溃前最后一行", text)
+        d.close()
+
+
+class TestRotatingFile(unittest.TestCase):
+    """手写的滚动文件（不用 logging）：留几份、最老的丢、改名失败时的兜底。"""
+
+    def _rf(self, **kw):
+        tmp = Path(tempfile.mkdtemp(prefix="sfrot-"))
+        return diag_mod._RotatingFile(str(tmp / "logs" / "a.log"), **kw), tmp / "logs"
+
+    def test_keeps_at_most_backups_and_drops_oldest(self):
+        rf, logs = self._rf(max_bytes=100, backups=2)
+        for i in range(40):
+            rf.write_line(f"行{i:03d}" + "y" * 20)
+        rf.close()
+        names = sorted(p.name for p in logs.iterdir())
+        self.assertEqual(names, ["a.log", "a.log.1", "a.log.2"])       # 没有 .3
+        newest = (logs / "a.log").read_text(encoding="utf-8")
+        self.assertIn("行039", newest)
+        old = (logs / "a.log.2").read_text(encoding="utf-8")
+        self.assertNotIn("行000", old)                                   # 最老的那份被丢了
+        for p in logs.iterdir():
+            self.assertLessEqual(p.stat().st_size, 100 + 40)
+
+    def test_no_backups_just_truncates(self):
+        rf, logs = self._rf(max_bytes=100, backups=0)
+        for i in range(30):
+            rf.write_line(f"行{i:03d}" + "y" * 20)
+        rf.close()
+        self.assertEqual([p.name for p in logs.iterdir()], ["a.log"])
+        self.assertIn("行029", (logs / "a.log").read_text(encoding="utf-8"))
+
+    def test_rename_failure_keeps_appending_and_reports(self):
+        import os
+        from unittest import mock
+        rf, logs = self._rf(max_bytes=100, backups=2)
+        with mock.patch.object(os, "replace", side_effect=PermissionError("被占用")):
+            for i in range(8):                       # 8 行 ≈ 200 字节：超过 100，没到 400
+                rf.write_line(f"行{i:03d}" + "y" * 20)
+            self.assertIn("PermissionError", rf.rotate_error or "")
+            text = (logs / "a.log").read_text(encoding="utf-8")
+            self.assertIn("行000", text)             # 滚不动，没丢数据
+            self.assertIn("行007", text)
+            for i in range(8, 40):                   # 一直滚不动，到 4 倍上限就清空重写
+                rf.write_line(f"行{i:03d}" + "y" * 20)
+            self.assertLessEqual((logs / "a.log").stat().st_size, 100 * rf.HARD_FACTOR + 40)
+            self.assertIn("行039", (logs / "a.log").read_text(encoding="utf-8"))
+        rf.write_line("改名恢复了")                    # 之后能改名了，滚动恢复，错误清掉
+        rf.write_line("z" * 120)
+        self.assertIsNone(rf.rotate_error)
+        rf.close()
+
+    def test_write_failure_is_recorded_not_raised(self):
+        d, host, tmp = new_diag()
+        d.info("先写一行")
+        d._file.close()
+        logs = tmp / "logs"
+        (logs / "session_flow.log").unlink()
+        (logs / "session_flow.log").mkdir()            # 把日志文件的位置换成一个目录，下次打开必然失败
+        d.info("写不进去")                            # 不能抛
+        self.assertIsNotNone(d.file_error)
+        self.assertEqual(len(d.recent(10)), 2)         # 内存环不受影响
+        self.assertTrue(any("写不进去" in m for _, m in host.calls))   # 宿主那份也照给
+        d.close()
+
+    def test_unwritable_dir_reports_file_error_at_start(self):
+        tmp = Path(tempfile.mkdtemp(prefix="sfdiag-"))
+        (tmp / "logs").write_text("我是个文件，不是目录", encoding="utf-8")
+        d = diag_mod.DiagLog(FakeHost(), file_path=tmp / "logs" / "session_flow.log")
+        self.assertIsNotNone(d.file_error)
+        d.info("没有文件也能记内存环")
+        self.assertEqual(len(d.recent(5)), 1)
+        d.close()
+
 
 class TestGuard(unittest.TestCase):
     def test_counts_and_trace_masked(self):
@@ -218,6 +307,35 @@ class TestBundle(unittest.TestCase):
     def test_no_diag_returns_error(self):
         rec, st, nm, _ = fakes.make_recorder()
         res = run(SessionFlowWebApi(st, nm, recorder=rec).handle_diag({}, {}))
+        self.assertEqual(res["status"], "error")
+        st.close()
+
+    def test_api_errors_land_in_diag_log_and_host(self):
+        """接口里的报错走诊断日志：进内存环 / 文件 / “最近报错”，也转给宿主 logger。"""
+        from unittest import mock
+        from sf import search as search_mod
+        api, st, d = self._setup()
+        host = d.host
+        with mock.patch.object(search_mod, "search", side_effect=RuntimeError("检索炸了")):
+            res = run(api.handle_search({"q": "随便"}, {}))
+        self.assertEqual(res["status"], "error")
+        self.assertEqual(d.error_count, 1)
+        self.assertIn("RuntimeError: 检索炸了", d.errors[-1]["traceback"])
+        self.assertTrue(any("检索出错" in x for x in d.recent(10)))
+        self.assertTrue(any(k == "error" and "检索出错" in m for k, m in host.calls))
+        b = run(api.handle_diag({}, {}))["data"]
+        self.assertTrue(any("检索出错" in e["message"] for e in b["recent_errors"]))
+        self.assertIn("rotate_error", b["log_file"])
+        st.close()
+        d.close()
+
+    def test_api_errors_without_diag_do_not_raise(self):
+        from unittest import mock
+        from sf import search as search_mod
+        rec, st, nm, _ = fakes.make_recorder()
+        api = SessionFlowWebApi(st, nm, recorder=rec)     # 没接诊断日志（离线）
+        with mock.patch.object(search_mod, "search", side_effect=RuntimeError("x")):
+            res = run(api.handle_search({"q": "随便"}, {}))
         self.assertEqual(res["status"], "error")
         st.close()
 

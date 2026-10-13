@@ -18,7 +18,6 @@ from __future__ import annotations
 import asyncio
 import functools
 import json
-import logging
 import time
 from typing import Any, Callable
 
@@ -31,8 +30,6 @@ from . import spdiff as spdiff_mod
 from . import stats as stats_mod
 from . import summary as summary_mod
 from . import timing as timing_mod
-
-log = logging.getLogger("astrbot_plugin_session_flow")
 
 PLUGIN_NAME = "astrbot_plugin_session_flow"
 MAX_EXPORT_RUNS = 200      # 一次最多导多少轮（一页最大 200 条，搜索结果也只导前 200 轮）
@@ -85,6 +82,17 @@ class SessionFlowWebApi:
         self.runtime_probe = None
         self.plugin_version = ""    # 导出写在文件头里，由 main.py 接上
         self.health_probe = None    # 页面顶部横幅的自检，由 main.py 接上，返回问题列表
+
+    # ------------------------------------------------------------ 日志
+    def _log_exc(self, msg: str) -> None:
+        """接口里的报错：记进诊断日志。诊断日志再转给宿主的 logger（main.py 传进来的 astrbot.api.logger），
+        同时进诊断包的“最近报错”。没接诊断日志（离线测试）就不记。必须在 except 块里调用，才带得出堆栈。"""
+        if self.diag is not None:
+            self.diag.exception(msg)
+
+    def _log_warn(self, msg: str) -> None:
+        if self.diag is not None:
+            self.diag.warning(msg)
 
     # ------------------------------------------------------------ 总览
     @_threaded
@@ -253,7 +261,7 @@ class SessionFlowWebApi:
         try:
             return timing_mod.build(run, meta_events)
         except Exception:
-            log.exception("[session_flow] 算时间拆分出错")
+            self._log_exc("算时间拆分出错")
             return None
 
     @_threaded
@@ -304,7 +312,7 @@ class SessionFlowWebApi:
                 return err(msg)
             text, mime = export_mod.render(bundle, fmt)
         except Exception as exc:
-            log.exception("[session_flow] 生成单轮导出失败")
+            self._log_exc("生成单轮导出失败")
             return err(f"生成导出失败：{exc}")
         summ = bundle.get("summary") or {}
         sp = bundle.get("system_prompt")
@@ -363,7 +371,7 @@ class SessionFlowWebApi:
             text, mime, meta = export_mod.render_many(
                 bundles, fmt=fmt, label=label, version=self.plugin_version, raw=raw, requested=len(ids))
         except Exception as exc:
-            log.exception("[session_flow] 生成批量导出失败")
+            self._log_exc("生成批量导出失败")
             return err(f"生成导出失败：{exc}")
         return ok({"filename": export_mod.filename_many(meta["included"], fmt), "mime": mime, "fmt": fmt,
                    "text": text, "chars": meta["chars"], "masked": not raw, "requested": len(ids),
@@ -395,7 +403,7 @@ class SessionFlowWebApi:
         try:
             return ok(stats_mod.inject_stats(self.store, self.guesser, days=days, umo=args.get("umo") or None))
         except Exception as exc:
-            log.exception("[session_flow] 注入统计出错")
+            self._log_exc("注入统计出错")
             return err(f"统计出错：{exc}")
 
     @_threaded
@@ -405,7 +413,7 @@ class SessionFlowWebApi:
         try:
             problems = self.health_probe()
         except Exception as exc:
-            log.exception("[session_flow] 自检出错")
+            self._log_exc("自检出错")
             problems = [{"code": "health_failed", "level": "warn", "title": "自检本身出错了", "text": str(exc)}]
         return ok({"problems": problems, "checked_at": time.time()})
 
@@ -509,7 +517,7 @@ class SessionFlowWebApi:
                                     umo=args.get("umo") or None,
                                     limit=_int(args.get("limit", 50), 50, 1, 200))
         except Exception as exc:
-            log.exception("[session_flow] 检索出错")
+            self._log_exc("检索出错")
             return err(f"检索出错：{exc}")
         return ok(res)
 
@@ -552,7 +560,7 @@ class SessionFlowWebApi:
                 await asyncio.to_thread(
                     plugin.importer.start, db, force=force)
             except Exception:
-                log.exception("[session_flow] 旧档导入失败")
+                self._log_exc("旧档导入失败")
 
         asyncio.get_running_loop().create_task(_bg())
         return ok({"started": True})
@@ -597,7 +605,7 @@ class SessionFlowWebApi:
                 self.store, self.recorder, self.diag, config=cfg, runtime=rt, importer=self.importer,
                 raw=_truthy(args.get("raw", "0")), log_lines=_int(args.get("lines"), 600, 50, 3000))
         except Exception as exc:
-            log.exception("[session_flow] 生成诊断包失败")
+            self._log_exc("生成诊断包失败")
             return err(f"生成诊断包失败：{exc}")
         return ok(bundle)
 
@@ -628,7 +636,7 @@ class SessionFlowWebApi:
     def register(self, context: Any, plugin_name: str = PLUGIN_NAME) -> int:
         reg = getattr(context, "register_web_api", None)
         if not callable(reg):
-            log.warning("[session_flow] 当前 AstrBot 不支持 register_web_api，插件页不可用")
+            self._log_warn("当前 AstrBot 不支持 register_web_api，插件页不可用")
             return 0
 
         def wrap(handler):
@@ -642,7 +650,7 @@ class SessionFlowWebApi:
                         body = payload if isinstance(payload, dict) else {}
                     return await handler(args, body)
                 except Exception as exc:
-                    log.exception("[session_flow] 接口出错")
+                    self._log_exc("接口出错")
                     return err(f"出错了：{exc}")
 
             view.__name__ = f"sf_{handler.__name__}"

@@ -3,9 +3,24 @@
 
 from __future__ import annotations
 
-import logging
 import sys
 import types
+
+
+class _StubLogger:
+    """宿主 logger 的桩：只收消息，不输出。"""
+
+    def __init__(self):
+        self.records: list[tuple[str, str]] = []
+
+    def _add(self, level, msg, *a, **k):
+        self.records.append((level, str(msg)))
+
+    def debug(self, msg, *a, **k): self._add("debug", msg)
+    def info(self, msg, *a, **k): self._add("info", msg)
+    def warning(self, msg, *a, **k): self._add("warning", msg)
+    def error(self, msg, *a, **k): self._add("error", msg)
+    def exception(self, msg, *a, **k): self._add("error", msg)
 
 
 def _deco(*dargs, **dkw):
@@ -20,7 +35,7 @@ def install_astrbot_stub() -> None:
     astrbot = types.ModuleType("astrbot")
     astrbot._is_stub = True
     api = types.ModuleType("astrbot.api")
-    api.logger = logging.getLogger("astrbot_stub")
+    api.logger = _StubLogger()
     event = types.ModuleType("astrbot.api.event")
     filt = types.ModuleType("astrbot.api.event.filter")
     for name in ("on_waiting_llm_request", "on_llm_request", "on_agent_begin",

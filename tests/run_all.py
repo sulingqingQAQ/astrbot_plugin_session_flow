@@ -40,6 +40,7 @@ MODULES = (
     "test_diag",
     "test_main_wiring",
     "test_page_static",
+    "test_rules_static",
 )
 
 
