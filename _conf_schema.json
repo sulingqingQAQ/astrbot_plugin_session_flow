@@ -1,0 +1,62 @@
+{
+  "enable_record": {
+    "type": "bool",
+    "description": "启用记录",
+    "hint": "管什么：记不记新的聊天回合。关掉后不再记新的，但插件页照常能看已经记下的，旧档导入也能用。默认开着。",
+    "default": true
+  },
+  "exclude_umos": {
+    "type": "list",
+    "description": "不记录的会话（UMO）",
+    "hint": "管什么：哪些会话完全不记。一行一个，格式是 平台:消息类型:会话ID，例如 webchat:FriendMessage:webchat!astrbot!xxxx；可以用 * 代替一整段，如 default:GroupMessage:* 就是所有群都不记。加得越多，记得越少，库长得越慢。",
+    "default": []
+  },
+  "store_system_prompt": {
+    "type": "bool",
+    "description": "存完整 system prompt",
+    "hint": "管什么：要不要把每次发给模型的 system prompt 原文存一份。开着：排查别的插件往提示词里塞东西时能看到原文，相同的内容只存一份，省地方；关掉：不留提示词原文，只记个指纹，排查注入就看不见了。默认开着。",
+    "default": true
+  },
+  "max_text_chars": {
+    "type": "int",
+    "description": "单条正文字数上限",
+    "hint": "管什么：一条提问/回复/工具结果最多记多少字。调大：记得全，但库长得快；调小：库小，但长内容会被截掉一截（会标原长）。system prompt 不受这条管。默认 50000。",
+    "default": 50000
+  },
+  "max_tool_result_chars": {
+    "type": "int",
+    "description": "单条工具结果字数上限",
+    "hint": "管什么：一次工具返回最多记多少字。调大：工具吐长文时记得全，库长得快；调小：只留开头，省地方（会标原长）。默认 20000。",
+    "default": 20000
+  },
+  "retention_days": {
+    "type": "int",
+    "description": "保留天数",
+    "hint": "管什么：聊天记录留多少天，超过的每天自动删（回合、事件、检索索引一起删，没人用的 system prompt 存档也顺手清）。调大：能翻旧账，但库一直长；调小：库小，但旧记录找不回来。0 = 一直留着。默认 90。",
+    "default": 90
+  },
+  "link_provider_stats": {
+    "type": "bool",
+    "description": "对齐 AstrBot 自带的用量表补 token",
+    "hint": "管什么：每分钟去 AstrBot 自己记的用量表（只读，不动它）里，按会话、对话和开始时间把 token 数、首字时间、用的哪个模型对回来，还能把当时漏判的模型失败补标成失败。关掉：每轮的 token 和模型两栏就是空的，失败也可能漏标。默认开着。",
+    "default": true
+  },
+  "stale_close_minutes": {
+    "type": "int",
+    "description": "运行中断判定分钟",
+    "hint": "管什么：一个回合开着超过这么久还没动静（插件被重载、进程被杀、流程卡死），就把它标成“被打断”，免得“运行中”里一直挂着僵尸。调大：等得久，僵尸挂得久；调小：关得快，但慢工具没跑完也可能被误判。默认 30。",
+    "default": 30
+  },
+  "diag_log_enabled": {
+    "type": "bool",
+    "description": "写运行日志文件",
+    "hint": "管什么：要不要把插件自己的运行情况（启动信息、每轮运行的开始和结束、报错、后台任务）写进数据目录下的 logs/session_flow.log，并且能在插件页「管理」里导出诊断包。关掉：不写文件、也不留内存日志，出问题时就没东西可导出，只剩 AstrBot 控制台里的普通日志。日志只含运行编号、状态、数量、耗时，不含聊天内容，会话 ID 也是打码的；文件会自动滚动，最多留最近约 4MB。改完要重载插件才生效。默认开着。",
+    "default": true
+  },
+  "diag_log_runs": {
+    "type": "bool",
+    "description": "逐轮记录开始和结束",
+    "hint": "管什么：日志里要不要每一轮运行都记「开始」「结束」两行（带状态、步数、工具数、报错数、用时）。开着：排查“某一轮为什么没记上 / 被标成报错 / 一直卡着”最有用，但群很活跃时日志滚得快（4MB 大概只够留最近一万轮左右）；关掉：只记启动、报错、后台任务这些大事，日志很安静，但看不到每一轮的来龙去脉。要先开着上面的「写运行日志文件」才有用。改完要重载插件才生效。默认开着。",
+    "default": true
+  }
+}

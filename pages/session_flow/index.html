@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>会话流</title>
+  <!-- AstrBot 托管时会把这个地址改写成带鉴权参数的真实地址 -->
+  <script src="/api/plugin/page/bridge-sdk.js"></script>
+  <link rel="stylesheet" href="./app.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">会话流 <span class="muted" id="brand-counts"></span></div>
+    <nav class="tabs" id="tabs">
+      <button data-tab="sessions" class="active">会话</button>
+      <button data-tab="search">检索</button>
+      <button data-tab="legacy">旧档</button>
+      <button data-tab="admin">管理</button>
+    </nav>
+  </header>
+
+  <div id="health-banner" class="health hidden" role="alert"></div>
+  <div id="toast" class="toast hidden"></div>
+  <div id="fatal" class="fatal hidden"></div>
+
+  <main>
+    <!-- 会话 -->
+    <section id="tab-sessions" class="tab active">
+      <div class="grid stats" id="stats"></div>
+      <div class="card">
+        <h3>常用工具 <span class="muted">（点名次数，错 = 报错次数）</span></h3>
+        <div id="tool-top"></div>
+      </div>
+      <div class="card">
+        <div class="inline filters">
+          <input type="text" id="f-q" placeholder="搜会话（UMO / 名字）" />
+          <select id="f-type">
+            <option value="all">全部类型</option>
+            <option value="group">群聊</option>
+            <option value="private">私聊</option>
+            <option value="other">其他</option>
+          </select>
+          <select id="f-sort">
+            <option value="recent">最近活跃</option>
+            <option value="runs">回合最多</option>
+            <option value="errors">报错最多</option>
+            <option value="tokens">token 最多</option>
+          </select>
+          <label class="check"><input type="checkbox" id="f-errors" /> 只看报错</label>
+          <button class="primary" id="btn-filter">筛选</button>
+        </div>
+      </div>
+      <div class="two-col">
+        <div class="card">
+          <h3>会话 <span class="muted" id="umo-count"></span></h3>
+          <table class="table" id="umo-table"></table>
+        </div>
+        <div class="card" id="runs-card">
+          <p class="muted" id="runs-empty">点左边的会话看回合。</p>
+          <div id="umo-detail" class="hidden">
+            <div class="runs-head">
+              <div class="runs-head-l">
+                <h3 id="runs-title"></h3>
+                <div class="meta" id="umo-summary"></div>
+              </div>
+              <form id="runs-search" class="runs-search">
+                <select id="rs-kind" title="只在这一类内容里搜；不写关键词时，列出含这一类内容的回合">
+                  <option value="">全部内容</option>
+                  <option value="user">提问</option>
+                  <option value="text">回复</option>
+                  <option value="think">思考</option>
+                  <option value="tool">工具</option>
+                  <option value="inject">注入</option>
+                  <option value="edit">改动</option>
+                  <option value="error">报错</option>
+                </select>
+                <span class="rs-box">
+                  <input type="text" id="rs-q" placeholder="搜本对话：关键词 / tool:骰子 / err:" autocomplete="off" />
+                  <button type="button" id="rs-clear" class="rs-x hidden" title="清除搜索，回到全部回合">×</button>
+                </span>
+                <button class="primary" type="submit" id="rs-go">搜索</button>
+              </form>
+            </div>
+            <div class="actions">
+              <button class="small" id="btn-full-summary">完整摘要</button>
+              <button class="small" id="btn-active" title="看这个会话有没有正在跑的回合">运行中</button>
+            </div>
+            <pre id="summary-result" class="result hidden"></pre>
+            <div class="inline export-bar" id="batch-export">
+              <span class="muted">批量导出</span>
+              <select id="bx-fmt" title="导出格式">
+                <option value="md">Markdown</option>
+                <option value="json">JSON</option>
+              </select>
+              <button class="small" id="btn-bx-page" title="把下面列表当前这一页的回合导成一个文件（相同的 system prompt 只放一份）">导出本页</button>
+              <button class="small hidden" id="btn-bx-search" title="把搜索命中的回合都导出来（最多 200 轮）">导出搜索结果</button>
+              <button class="small" id="btn-bx-copy" title="不想存文件就复制到剪贴板">复制本页</button>
+              <label class="check"><input type="checkbox" id="bx-raw" /> 保留原始会话 ID</label>
+              <span id="bx-mask-box" class="mask-box"></span>
+            </div>
+            <p class="hint hidden" id="bx-note"></p>
+            <textarea id="bx-fallback" class="result hidden" readonly rows="8" aria-label="批量导出内容（复制不了时在这里全选复制）"></textarea>
+            <div class="pager" id="runs-pager">
+              <label class="pg-size">每页
+                <select id="pg-size">
+                  <option value="20">20 条/页</option>
+                  <option value="50">50 条/页</option>
+                  <option value="100">100 条/页</option>
+                </select>
+              </label>
+              <span class="pg-right">
+                <button class="small" id="pg-prev">← 上一页</button>
+                <span class="pg-info">第 <input type="number" id="pg-jump" min="1" value="1" title="输入页码后回车跳转" /> / <span id="pg-pages">1</span> 页 · <span id="pg-total"></span></span>
+                <button class="small" id="pg-next">下一页 →</button>
+              </span>
+            </div>
+            <div id="runs-list" class="scrollbox"></div>
+          </div>
+        </div>
+      </div>
+      <div class="card hidden" id="run-detail-card">
+        <div class="run-head">
+          <div class="run-head-main">
+            <h3 id="run-title"></h3>
+            <div class="meta" id="run-meta"></div>
+          </div>
+          <div class="sp-block hidden" id="sp-block"></div>
+        </div>
+        <div class="inline export-bar" id="run-export">
+          <select id="ex-fmt" title="导出格式">
+            <option value="md">Markdown（好读，推荐）</option>
+            <option value="json">JSON（不丢字段）</option>
+          </select>
+          <button class="small" id="btn-ex-download" title="把这一轮的全部内容（含注入全文、system prompt 全文）存成一个文件">导出本轮</button>
+          <button class="small" id="btn-ex-copy" title="不想存文件就复制到剪贴板">复制</button>
+          <label class="check"><input type="checkbox" id="ex-raw" /> 保留原始会话 ID</label>
+          <span id="ex-mask-box" class="mask-box"></span>
+        </div>
+        <p class="hint" id="ex-note">导出的文件含这一轮的聊天正文和 system prompt，会话 ID 默认打码，正文不脱敏，发出去前自己看一眼。</p>
+        <textarea id="ex-fallback" class="result hidden" readonly rows="8" aria-label="导出内容（复制不了时在这里全选复制）"></textarea>
+        <div id="run-injects" class="injects"></div>
+        <div id="run-timing" class="panel hidden"></div>
+        <div id="run-context" class="panel hidden"></div>
+        <div id="sp-diff" class="panel hidden"></div>
+        <div id="sysprompt-box"></div>
+        <div id="events"></div>
+      </div>
+    </section>
+
+    <!-- 检索 -->
+    <section id="tab-search" class="tab">
+      <div class="card">
+        <form id="search-form" class="searchbar">
+          <input type="text" id="search-q" placeholder="自由词 / tool:骰子 / err:报错 / user:你好 / umo:群号" />
+          <button class="primary" type="submit">检索</button>
+        </form>
+        <p class="hint">自由词 3 字及以上走全文索引，否则按包含匹配；多个条件是交集。每个回合最多展示 3 条命中事件。</p>
+        <div id="search-meta" class="meta"></div>
+      </div>
+      <div id="search-results"></div>
+    </section>
+
+    <!-- 旧档 -->
+    <section id="tab-legacy" class="tab">
+      <div class="card">
+        <h3>从 AstrBot 旧档导入</h3>
+        <p class="hint">读 AstrBot 数据库里的 conversations / provider_stats / platform_message_history，导入为 source=legacy 的回合。已导入过的对话会跳过（按 updated_at 判断）。</p>
+        <div class="actions">
+          <button class="primary" id="btn-legacy">开始导入</button>
+          <label class="check"><input type="checkbox" id="legacy-force" /> 强制重导（先删掉该对话已导入的 legacy 回合）</label>
+          <button class="small" id="btn-legacy-status">刷新进度</button>
+        </div>
+        <pre id="legacy-result" class="result"></pre>
+      </div>
+    </section>
+
+    <!-- 管理 -->
+    <section id="tab-admin" class="tab">
+      <div class="card">
+        <h3>库状态</h3>
+        <pre id="admin-stats" class="result"></pre>
+      </div>
+      <div class="card" id="inject-stats-card">
+        <h3>谁在往上下文里塞东西</h3>
+        <p class="hint">按插件统计每轮被塞进请求的内容有多少字（只统计记到的“注入”）。“内核 / 更早”是会话流看到请求时就已经在的；
+          “未归属”是没抓到是谁；“疑似”是在插件源码里找到同名标签的推测。按字数算，不换算 token。</p>
+        <div class="inline">
+          <select id="is-days" title="统计哪段时间的回合">
+            <option value="7">最近 7 天</option>
+            <option value="30">最近 30 天</option>
+            <option value="0">全部</option>
+          </select>
+          <select id="is-umo" title="只统计一个会话，或全部会话"><option value="">全部会话</option></select>
+          <button class="small" id="btn-is-refresh">刷新</button>
+        </div>
+        <p class="hint" id="is-summary"></p>
+        <div class="table-wrap"><table class="table stat-table" id="is-table"></table></div>
+        <div id="is-edits" class="hint"></div>
+      </div>
+      <div class="card" id="mask-card">
+        <h3>导出时屏蔽哪些内容</h3>
+        <p class="hint">在这里设好的规则，导出（单轮、一整页、搜索结果）时会把匹配的那一段<b>整段删掉</b>，不留占位，
+          文件开头只写一句“有 N 段被屏蔽”。默认一条规则都没有，也就是什么都不屏蔽。号码、群名不会被自动打码。
+          名字可以写注入块名、来源插件、工具名，支持 * 通配；提问、回复、思考、system prompt 没有名字，只能整种屏蔽。</p>
+        <div id="mask-list"></div>
+        <div class="inline">
+          <select id="mk-kind"></select>
+          <input type="text" id="mk-name" list="mk-names" placeholder="名字 / 来源插件（可留空 = 这一种全部）" autocomplete="off" />
+          <datalist id="mk-names"></datalist>
+          <button class="small" id="btn-mk-add">加一条</button>
+          <button class="primary small" id="btn-mk-save">保存规则</button>
+        </div>
+        <p class="hint" id="mk-note"></p>
+      </div>
+      <div class="card">
+        <h3>运行诊断</h3>
+        <p class="hint">插件自己的运行日志和状态：钩子触发次数 / 耗时 / 报错、后台任务、库状态、最近几十轮的摘要、日志尾巴。
+          <b>不含聊天内容</b>，会话 ID 默认打码。插件出问题时点「下载诊断包」，把文件发给帮你看的人。</p>
+        <div class="inline">
+          <label class="check"><input type="checkbox" id="diag-raw" /> 保留原始会话 ID（发给别人前请留意）</label>
+          <button class="small" id="btn-diag-refresh">刷新查看</button>
+          <button id="btn-diag-download">下载诊断包</button>
+        </div>
+        <p class="hint" id="diag-file"></p>
+        <pre id="diag-view" class="result"></pre>
+      </div>
+      <div class="card">
+        <h3>清理</h3>
+        <p class="hint">删除 N 天之前的回合（含事件）。删之前请确认不再需要这些记录，删了找不回来。</p>
+        <div class="inline">
+          <input type="number" id="purge-days" value="180" min="1" />
+          <span class="muted">天之前</span>
+          <button class="danger" id="btn-purge">删除</button>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script src="./app.js"></script>
+</body>
+</html>
