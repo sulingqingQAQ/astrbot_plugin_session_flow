@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# 测试跑出来的临时文件（run_all.py 把临时目录设在 tests/.tmp，里面有库和日志，体积很大，别提交）
+tests/.tmp/
+
+# 本地跑起来产生的数据（真实聊天记录会进库，绝对不要提交）
+*.db
+*.db-wal
+*.db-shm
+!tests/data/legacy_fixture.db
+logs/
+*.log
+
+# 导出 / 诊断包（含聊天正文、会话 ID）
+session_flow_diag_*.json
+session_flow_run_*.md
+session_flow_run_*.json
+session_flow_runs_*.md
+session_flow_runs_*.json
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
